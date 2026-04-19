@@ -14,7 +14,7 @@ import PhoneInput, { isValidPhoneNumber } from 'react-native-international-phone
 import {
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-import auth, { FirebaseAuthTypes } from '@react-native-firebase/auth';
+import { getAuth, signInWithPhoneNumber, FirebaseAuthTypes } from '@react-native-firebase/auth';
 import { ScreenSafeArea } from '../components/ScreenSafeArea';
 import { colors, font, keyboardOffset, layout } from '../theme/tokens';
 import { upsertTestUser } from '../services/users';
@@ -71,7 +71,7 @@ export function LoginScreen({ onSignedIn }: Props) {
 
     setBusy(true);
     try {
-      const c = await auth().signInWithPhoneNumber(formattedPhone);
+      const c = await signInWithPhoneNumber(getAuth(), formattedPhone);
       setConfirm(c);
       toastSuccess('Code sent', 'Enter the SMS verification code.');
     } catch (e) {

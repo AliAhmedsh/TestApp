@@ -9,9 +9,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import firestore from '@react-native-firebase/firestore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import auth from '@react-native-firebase/auth';
+import { getFirestore, collection, doc, onSnapshot } from '@react-native-firebase/firestore';
+import { getAuth } from '@react-native-firebase/auth';
 import { COL_TEST_CHATS } from '../constants';
 import { createRoom, joinRoom } from '../services/rooms';
 import {
@@ -33,7 +33,7 @@ const NAME_MAX = 40;
 const SPACER_H = 20;
 
 export function RoomHomeScreen({ onOpenRoom, onLogout }: Props) {
-  const uid = auth().currentUser?.uid;
+  const uid = getAuth().currentUser?.uid;
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('Demo room');
   const [joinId, setJoinId] = useState('');
@@ -57,32 +57,32 @@ export function RoomHomeScreen({ onOpenRoom, onLogout }: Props) {
       setLiveParticipantCount({});
       return;
     }
-    const unsubs = rooms.map(({ id }) =>
-      firestore()
-        .collection(COL_TEST_CHATS)
-        .doc(id)
-        .onSnapshot(
-          snap => {
-            if (!snap.exists()) {
-              setLiveParticipantCount(prev => {
-                const next = { ...prev };
-                delete next[id];
-                return next;
-              });
-              return;
-            }
-            const raw = snap.data();
-            const ids = Array.isArray(raw?.participantIds)
-              ? raw.participantIds
-              : [];
-            setLiveParticipantCount(prev => ({
-              ...prev,
-              [id]: ids.length,
-            }));
-          },
-          err => console.warn('live room snapshot', id, err),
-        ),
-    );
+    const db = getFirestore();
+    const unsubs = rooms.map(({ id }) => {
+      const docRef = doc(db, COL_TEST_CHATS, id);
+      return onSnapshot(
+        docRef,
+        snap => {
+          if (!snap.exists) {
+            setLiveParticipantCount(prev => {
+              const next = { ...prev };
+              delete next[id];
+              return next;
+            });
+            return;
+          }
+          const raw = snap.data();
+          const ids = Array.isArray(raw?.participantIds)
+            ? raw.participantIds
+            : [];
+          setLiveParticipantCount(prev => ({
+            ...prev,
+            [id]: ids.length,
+          }));
+        },
+        err => console.warn('live room snapshot', id, err),
+      );
+    });
     return () => unsubs.forEach(u => u());
   }, [uid, rooms]);
 

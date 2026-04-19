@@ -1,4 +1,12 @@
-import firestore, {
+import {
+  getFirestore,
+  collection,
+  doc,
+  setDoc,
+  onSnapshot,
+  limit,
+  query,
+  serverTimestamp,
   FirebaseFirestoreTypes,
 } from '@react-native-firebase/firestore';
 import { COL_ROOM_RECENTS, COL_TEST_USERS } from '../constants';
@@ -11,10 +19,8 @@ export type RoomRecentDoc = {
 };
 
 function recentsCol(uid: string) {
-  return firestore()
-    .collection(COL_TEST_USERS)
-    .doc(uid)
-    .collection(COL_ROOM_RECENTS);
+  const db = getFirestore();
+  return collection(db, COL_TEST_USERS, uid, COL_ROOM_RECENTS);
 }
 
 /** Upsert a row when user creates or joins a room (survives leaving the room). */
@@ -24,17 +30,16 @@ export async function recordRoomVisit(
   joinCode: string,
   name: string,
 ): Promise<void> {
-  await recentsCol(uid)
-    .doc(roomDocId)
-    .set(
-      {
-        roomDocId,
-        joinCode,
-        name,
-        updatedAt: firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
+  await setDoc(
+    doc(recentsCol(uid), roomDocId),
+    {
+      roomDocId,
+      joinCode,
+      name,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
 }
 
 /** Live snapshot of recent rooms (ordered by last visit). */
@@ -42,10 +47,9 @@ export function subscribeRoomRecents(
   uid: string,
   onUpdate: (items: { id: string; data: RoomRecentDoc }[]) => void,
 ): () => void {
-  return recentsCol(uid)
-    .limit(50)
-    .onSnapshot(
-      snap => {
+  return onSnapshot(
+    query(recentsCol(uid), limit(50)),
+    snap => {
         const items = snap.docs
           .map(d => {
             const raw = d.data();

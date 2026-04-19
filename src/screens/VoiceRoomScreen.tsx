@@ -7,10 +7,8 @@ import React, {
 } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   AppState,
   BackHandler,
-  Easing,
   PermissionsAndroid,
   Platform,
   Share,
@@ -19,11 +17,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import firestore from '@react-native-firebase/firestore';
-import auth from '@react-native-firebase/auth';
+import { getFirestore, doc, onSnapshot } from '@react-native-firebase/firestore';
+import { getAuth } from '@react-native-firebase/auth';
 import { RTCView } from 'react-native-webrtc';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScreenSafeArea } from '../components/ScreenSafeArea';
+import { VoiceWaveform } from '../components/VoiceWaveform';
 import { COL_TEST_CHATS } from '../constants';
 import {
   ensureInRoom,
@@ -50,121 +49,19 @@ async function ensureMic(): Promise<boolean> {
   return res === PermissionsAndroid.RESULTS.GRANTED;
 }
 
-function SpeakingPulse({
-  visible,
-  energetic,
-}: {
-  visible: boolean;
-  energetic: boolean;
-}) {
-  const pulse = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (!visible) {
-      pulse.setValue(0);
-      return;
-    }
-    const duration = energetic ? 450 : 900;
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulse, {
-          toValue: 0,
-          duration,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [visible, energetic, pulse]);
-
-  if (!visible) {
-    return null;
-  }
-
-  const scale = pulse.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, energetic ? 1.22 : 1.08],
-  });
-  const opacity = pulse.interpolate({
-    inputRange: [0, 1],
-    outputRange: [energetic ? 0.5 : 0.25, energetic ? 1 : 0.55],
-  });
-
-  return (
-    <View style={pulseStyles.wrap} accessibilityLabel="Voice activity">
-      <Animated.View
-        style={[
-          pulseStyles.ring,
-          {
-            opacity,
-            transform: [{ scale }],
-            borderColor: energetic ? colors.success : colors.accentMuted,
-          },
-        ]}
-      />
-      <Animated.View
-        style={[
-          pulseStyles.ringInner,
-          {
-            opacity,
-            transform: [{ scale }],
-          },
-        ]}
-      />
-      <Text style={pulseStyles.label}>
-        {energetic ? 'You are speaking' : 'Mic live'}
-      </Text>
-    </View>
-  );
-}
-
-const pulseStyles = StyleSheet.create({
-  wrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: 16,
-    height: 120,
-  },
-  ring: {
-    position: 'absolute',
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    borderWidth: 3,
-  },
-  ringInner: {
-    position: 'absolute',
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    borderWidth: 2,
-    borderColor: colors.accent,
-  },
-  label: {
-    position: 'absolute',
-    bottom: 0,
-    fontSize: font.small,
-    color: colors.textMuted,
-    fontWeight: '600',
-  },
-});
-
 export function VoiceRoomScreen({ roomDocId, onLeave }: Props) {
-  const myUid = auth().currentUser?.uid ?? null;
+  const myUid = getAuth().currentUser?.uid ?? null;
   const insets = useSafeAreaInsets();
   const [participantIds, setParticipantIds] = useState<string[]>([]);
   const [roomRow, setRoomRow] = useState<TestChatRoom | null>(null);
   const [micReady, setMicReady] = useState(false);
   const [permError, setPermError] = useState<string | null>(null);
   const exitingRef = useRef(false);
+  /** Prevents AppState background (share sheet) from leaving the room */
+  const shareGuardRef = useRef(false);
+  const backgroundLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -207,33 +104,33 @@ export function VoiceRoomScreen({ roomDocId, onLeave }: Props) {
   }, [roomDocId, myUid, onLeave]);
 
   useEffect(() => {
-    const unsub = firestore()
-      .collection(COL_TEST_CHATS)
-      .doc(roomDocId)
-      .onSnapshot(
-        snap => {
-          if (!snap.exists()) {
-            setParticipantIds([]);
-            setRoomRow(null);
-            return;
-          }
-          const raw = snap.data() ?? {};
-          const ids = Array.isArray(raw.participantIds)
-            ? raw.participantIds
-            : [];
-          setParticipantIds(ids);
-          setRoomRow({
-            joinCode:
-              typeof raw.joinCode === 'string' ? raw.joinCode : '',
-            name: typeof raw.name === 'string' ? raw.name : 'Room',
-            createdBy:
-              typeof raw.createdBy === 'string' ? raw.createdBy : '',
-            createdAt: raw.createdAt ?? null,
-            participantIds: ids,
-          });
-        },
-        err => console.warn('room snapshot', err),
-      );
+    const db = getFirestore();
+    const docRef = doc(db, COL_TEST_CHATS, roomDocId);
+    const unsub = onSnapshot(
+      docRef,
+      snap => {
+        if (!snap.exists) {
+          setParticipantIds([]);
+          setRoomRow(null);
+          return;
+        }
+        const raw = snap.data() ?? {};
+        const ids = Array.isArray(raw.participantIds)
+          ? raw.participantIds
+          : [];
+        setParticipantIds(ids);
+        setRoomRow({
+          joinCode:
+            typeof raw.joinCode === 'string' ? raw.joinCode : '',
+          name: typeof raw.name === 'string' ? raw.name : 'Room',
+          createdBy:
+            typeof raw.createdBy === 'string' ? raw.createdBy : '',
+          createdAt: raw.createdAt ?? null,
+          participantIds: ids,
+        });
+      },
+      err => console.warn('room snapshot', err),
+    );
     return unsub;
   }, [roomDocId]);
 
@@ -253,12 +150,8 @@ export function VoiceRoomScreen({ roomDocId, onLeave }: Props) {
 
   const voiceEnabled = micReady && !!otherUid;
 
-  const { remoteStream, phase, errorMessage, localSpeaking } = useVoiceRoom(
-    roomDocId,
-    myUid,
-    otherUid,
-    voiceEnabled,
-  );
+  const { remoteStream, phase, errorMessage, audioLevel, voiceSessionReady } =
+    useVoiceRoom(roomDocId, myUid, otherUid, voiceEnabled);
 
   const onExit = useCallback(async () => {
     if (exitingRef.current) {
@@ -291,16 +184,38 @@ export function VoiceRoomScreen({ roomDocId, onLeave }: Props) {
   }, [onExit]);
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', next => {
-      // Only background — not "inactive" (keyboard, permission sheet would fire that)
-      if (next === 'background') {
-        onExit();
+    const clearBgTimer = () => {
+      if (backgroundLeaveTimerRef.current) {
+        clearTimeout(backgroundLeaveTimerRef.current);
+        backgroundLeaveTimerRef.current = null;
       }
+    };
+    const sub = AppState.addEventListener('change', next => {
+      if (next === 'active') {
+        clearBgTimer();
+        return;
+      }
+      if (next !== 'background') {
+        return;
+      }
+      if (shareGuardRef.current) {
+        return;
+      }
+      clearBgTimer();
+      backgroundLeaveTimerRef.current = setTimeout(() => {
+        if (!shareGuardRef.current) {
+          onExit();
+        }
+      }, 4500);
     });
-    return () => sub.remove();
+    return () => {
+      clearBgTimer();
+      sub.remove();
+    };
   }, [onExit]);
 
   const shareCode = async () => {
+    shareGuardRef.current = true;
     try {
       await Share.share({
         message: `Join my voice room on TestApp. Join code: ${displayJoinCode}`,
@@ -308,16 +223,21 @@ export function VoiceRoomScreen({ roomDocId, onLeave }: Props) {
       });
     } catch {
       /* dismissed */
+    } finally {
+      setTimeout(() => {
+        shareGuardRef.current = false;
+      }, 2800);
     }
   };
 
   const statusLine =
     permError ??
     errorMessage ??
-    (otherUid ? `Voice: ${phase}` : 'Waiting for the other participant…');
-
-  const pulseVisible = phase === 'connected' && micReady;
-  const pulseEnergetic = localSpeaking && pulseVisible;
+    (!otherUid
+      ? 'Waiting for the other participant…'
+      : !voiceSessionReady
+        ? 'Preparing secure voice session…'
+        : `Voice: ${phase}`);
 
   return (
     <ScreenSafeArea edges={['left', 'right', 'bottom']}>
@@ -363,7 +283,10 @@ export function VoiceRoomScreen({ roomDocId, onLeave }: Props) {
           </TouchableOpacity>
         </View>
 
-        <SpeakingPulse visible={pulseVisible} energetic={pulseEnergetic} />
+        <VoiceWaveform
+          active={phase === 'connected' && micReady}
+          level={audioLevel}
+        />
 
         <View style={styles.infoRow}>
           <View style={styles.infoPill}>

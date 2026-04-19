@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, StatusBar, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import auth, { FirebaseAuthTypes } from '@react-native-firebase/auth';
+import { getAuth, onAuthStateChanged, signOut, FirebaseAuthTypes } from '@react-native-firebase/auth';
 import { AppToastRoot } from './src/components/AppToast';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { RoomHomeScreen } from './src/screens/RoomHomeScreen';
@@ -18,7 +18,7 @@ function App() {
   const [phase, setPhase] = useState<Phase>({ screen: 'loading' });
 
   useEffect(() => {
-    const unsub = auth().onAuthStateChanged((_user: FirebaseAuthTypes.User | null) => {
+    const unsub = onAuthStateChanged(getAuth(), (_user: FirebaseAuthTypes.User | null) => {
       setPhase(p => {
         if (p.screen === 'voice') {
           return p;
@@ -30,7 +30,7 @@ function App() {
   }, []);
 
   const logout = () => {
-    auth().signOut().catch(err => console.warn('logout error', err));
+    signOut(getAuth()).catch(err => console.warn('logout error', err));
   };
 
   return (

@@ -1,4 +1,18 @@
-import firestore, {
+import {
+  getFirestore,
+  collection,
+  doc,
+  query,
+  where,
+  limit,
+  getDocs,
+  getDoc,
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+  arrayUnion,
+  arrayRemove,
+  deleteField,
   FirebaseFirestoreTypes,
 } from '@react-native-firebase/firestore';
 import { COL_TEST_CHATS } from '../constants';
@@ -16,9 +30,11 @@ export type TestChatRoom = {
   createdBy: string;
   createdAt: FirebaseFirestoreTypes.Timestamp | null;
   participantIds: string[];
+  /** WebRTC signaling scope — cleared when someone leaves */
+  voiceCallSessionId?: string;
 };
 
-const rooms = () => firestore().collection(COL_TEST_CHATS);
+const rooms = () => collection(getFirestore(), COL_TEST_CHATS);
 
 const MAX_CODE_ATTEMPTS = 32;
 
@@ -41,20 +57,19 @@ export async function createRoom(
 
   for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
     const joinCode = generateRoomCode();
-    const taken = await rooms()
-      .where('joinCode', '==', joinCode)
-      .limit(1)
-      .get();
+    const taken = await getDocs(
+      query(rooms(), where('joinCode', '==', joinCode), limit(1)),
+    );
     if (!taken.empty) {
       continue;
     }
 
-    const ref = rooms().doc();
-    await ref.set({
+    const ref = doc(rooms());
+    await setDoc(ref, {
       joinCode,
       name: trimmed,
       createdBy: uid,
-      createdAt: firestore.FieldValue.serverTimestamp(),
+      createdAt: serverTimestamp(),
       participantIds: [uid],
     });
 
@@ -73,16 +88,17 @@ export async function createRoom(
 async function roomRefFromJoinCode(
   normalized: string,
 ): Promise<FirebaseFirestoreTypes.DocumentReference> {
-  const byField = await rooms()
-    .where('joinCode', '==', normalized)
-    .limit(1)
-    .get();
+  const byField = await getDocs(
+    query(rooms(), where('joinCode', '==', normalized), limit(1)),
+  );
   if (!byField.empty) {
     return byField.docs[0].ref;
   }
 
-  const legacy = await rooms().doc(normalized).get();
-  if (legacy.exists()) {
+  const db = getFirestore();
+  const legacyRef = doc(db, COL_TEST_CHATS, normalized);
+  const legacy = await getDoc(legacyRef);
+  if (legacy.exists) {
     return legacy.ref;
   }
 
@@ -101,8 +117,8 @@ export async function joinRoom(
   }
 
   const ref = await roomRefFromJoinCode(joinCode);
-  const snap = await ref.get();
-  if (!snap.exists()) {
+  const snap = await getDoc(ref);
+  if (!snap.exists) {
     throw new Error('Room not found.');
   }
 
@@ -128,8 +144,8 @@ export async function joinRoom(
     throw new Error('Room is full (demo allows 2 participants for voice).');
   }
 
-  await ref.update({
-    participantIds: firestore.FieldValue.arrayUnion(uid),
+  await updateDoc(ref, {
+    participantIds: arrayUnion(uid),
   });
 
   try {
@@ -150,9 +166,10 @@ export async function joinRoom(
  * Re-enter a room by document id (e.g. from Recent). Adds uid to participantIds if not present.
  */
 export async function ensureInRoom(roomDocId: string, uid: string): Promise<void> {
-  const ref = rooms().doc(roomDocId);
-  const snap = await ref.get();
-  if (!snap.exists()) {
+  const db = getFirestore();
+  const ref = doc(db, COL_TEST_CHATS, roomDocId);
+  const snap = await getDoc(ref);
+  if (!snap.exists) {
     throw new Error('Room no longer exists.');
   }
   const data = snap.data() as Partial<TestChatRoom>;
@@ -163,15 +180,17 @@ export async function ensureInRoom(roomDocId: string, uid: string): Promise<void
   if (ids.length >= 2) {
     throw new Error('Room is full (demo allows 2 participants for voice).');
   }
-  await ref.update({
-    participantIds: firestore.FieldValue.arrayUnion(uid),
+  await updateDoc(ref, {
+    participantIds: arrayUnion(uid),
   });
 }
 
 export async function leaveRoom(roomDocId: string, uid: string): Promise<void> {
-  const ref = rooms().doc(roomDocId);
-  await ref.update({
-    participantIds: firestore.FieldValue.arrayRemove(uid),
+  const db = getFirestore();
+  const ref = doc(db, COL_TEST_CHATS, roomDocId);
+  await updateDoc(ref, {
+    participantIds: arrayRemove(uid),
+    voiceCallSessionId: deleteField(),
   });
 }
 

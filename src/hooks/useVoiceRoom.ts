@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import firestore, {
+import {
+  getFirestore,
+  collection,
+  doc,
+  addDoc,
+  onSnapshot,
+  runTransaction,
+  serverTimestamp,
+  orderBy,
+  query,
   FirebaseFirestoreTypes,
 } from '@react-native-firebase/firestore';
+import { nanoid } from 'nanoid';
 import {
   MediaStream,
   RTCIceCandidate,
@@ -12,18 +22,20 @@ import {
 import { COL_TEST_CHATS } from '../constants';
 
 const ICE_SERVERS = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ],
 };
 
 function signalsCol(roomDocId: string) {
-  return firestore()
-    .collection(COL_TEST_CHATS)
-    .doc(roomDocId)
-    .collection('signals');
+  const db = getFirestore();
+  return collection(db, COL_TEST_CHATS, roomDocId, 'signals');
 }
 
 async function sendSignal(
   roomDocId: string,
+  voiceSessionId: string,
   payload: {
     fromUid: string;
     toUid: string;
@@ -32,10 +44,11 @@ async function sendSignal(
     candidateJson?: string;
   },
 ) {
-  await signalsCol(roomDocId).add({
+  await addDoc(signalsCol(roomDocId), {
     ...payload,
+    sessionId: voiceSessionId,
     t: Date.now(),
-    createdAt: firestore.FieldValue.serverTimestamp(),
+    createdAt: serverTimestamp(),
   });
 }
 
@@ -50,15 +63,21 @@ export function useVoiceRoom(
     'idle' | 'acquiring' | 'signaling' | 'connected' | 'error'
   >('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [localSpeaking, setLocalSpeaking] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [voiceSessionId, setVoiceSessionId] = useState<string | null>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const lastAudioBytesRef = useRef(0);
+  const smoothedLevelRef = useRef(0);
   const localStreamRef = useRef<MediaStream | null>(null);
   const processedIds = useRef<Set<string>>(new Set());
   const pendingRemoteIce = useRef<RTCIceCandidate[]>([]);
-  const unsubRef = useRef<(() => void) | null>(null);
+  const unsubSignalsRef = useRef<(() => void) | null>(null);
   const offerSentRef = useRef(false);
+  const sessionCreatingRef = useRef(false);
+  const voiceSessionIdRef = useRef<string | null>(null);
+
+  voiceSessionIdRef.current = voiceSessionId;
 
   const flushPendingIce = useCallback(async () => {
     const pc = pcRef.current;
@@ -91,15 +110,20 @@ export function useVoiceRoom(
     return stream;
   }, []);
 
-  const teardown = useCallback(() => {
-    unsubRef.current?.();
-    unsubRef.current = null;
+  const teardownMedia = useCallback(() => {
+    unsubSignalsRef.current?.();
+    unsubSignalsRef.current = null;
     processedIds.current.clear();
     offerSentRef.current = false;
     pendingRemoteIce.current = [];
 
     if (pcRef.current) {
-      pcRef.current.close();
+      const pc = pcRef.current;
+      // Nullify listeners to prevent close() from triggering error states
+      (pc as any).onconnectionstatechange = null;
+      (pc as any).onicecandidate = null;
+      (pc as any).ontrack = null;
+      pc.close();
       pcRef.current = null;
     }
     if (localStreamRef.current) {
@@ -107,10 +131,67 @@ export function useVoiceRoom(
       localStreamRef.current = null;
     }
     setRemoteStream(null);
+    setErrorMessage(null);
     setPhase('idle');
-    setLocalSpeaking(false);
+    setAudioLevel(0);
+    smoothedLevelRef.current = 0;
     lastAudioBytesRef.current = 0;
   }, []);
+
+  useEffect(() => {
+    if (!roomDocId || !enabled) {
+      setVoiceSessionId(null);
+      return;
+    }
+    const db = getFirestore();
+    const docRef = doc(db, COL_TEST_CHATS, roomDocId);
+    const unsub = onSnapshot(docRef, snap => {
+      if (!snap.exists) {
+        setVoiceSessionId(null);
+        return;
+      }
+      const sid = snap.data()?.voiceCallSessionId;
+      setVoiceSessionId(
+        typeof sid === 'string' && sid.length > 0 ? sid : null,
+      );
+    });
+    return unsub;
+  }, [roomDocId, enabled]);
+
+  useEffect(() => {
+    if (!enabled || !roomDocId || !myUid || !otherUid) {
+      return;
+    }
+    const sorted = [myUid, otherUid].sort();
+    if (sorted[0] !== myUid) {
+      return;
+    }
+    if (voiceSessionId) {
+      sessionCreatingRef.current = false;
+      return;
+    }
+    if (sessionCreatingRef.current) {
+      return;
+    }
+    sessionCreatingRef.current = true;
+    const db = getFirestore();
+    const roomRef = doc(db, COL_TEST_CHATS, roomDocId);
+    runTransaction(db, async t => {
+      const snap = await t.get(roomRef);
+      if (!snap.exists) {
+        return;
+      }
+      const existing = snap.data()?.voiceCallSessionId;
+      if (typeof existing === 'string' && existing.length > 0) {
+        return;
+      }
+      t.update(roomRef, { voiceCallSessionId: nanoid(16) });
+    })
+      .catch(err => console.warn('voice session transaction', err))
+      .finally(() => {
+        sessionCreatingRef.current = false;
+      });
+  }, [enabled, roomDocId, myUid, otherUid, voiceSessionId]);
 
   const setupPeer = useCallback(
     async (stream: MediaStream) => {
@@ -137,11 +218,12 @@ export function useVoiceRoom(
       };
 
       pcAny.onicecandidate = ev => {
-        if (!roomDocId || !myUid || !otherUid) {
+        const sid = voiceSessionIdRef.current;
+        if (!roomDocId || !myUid || !otherUid || !sid) {
           return;
         }
         if (ev.candidate) {
-          sendSignal(roomDocId, {
+          sendSignal(roomDocId, sid, {
             fromUid: myUid,
             toUid: otherUid,
             signalType: 'candidate',
@@ -167,8 +249,15 @@ export function useVoiceRoom(
   );
 
   const processDoc = useCallback(
-    async (id: string, raw: FirebaseFirestoreTypes.DocumentData) => {
+    async (
+      id: string,
+      raw: FirebaseFirestoreTypes.DocumentData,
+      activeSessionId: string,
+    ) => {
       if (!roomDocId || !myUid || !otherUid) {
+        return;
+      }
+      if (raw.sessionId !== activeSessionId) {
         return;
       }
       if (processedIds.current.has(id)) {
@@ -199,7 +288,7 @@ export function useVoiceRoom(
         await flushPendingIce();
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        await sendSignal(roomDocId, {
+        await sendSignal(roomDocId, activeSessionId, {
           fromUid: myUid,
           toUid: otherUid,
           signalType: 'answer',
@@ -234,11 +323,12 @@ export function useVoiceRoom(
   );
 
   useEffect(() => {
-    if (!enabled || !roomDocId || !myUid || !otherUid) {
-      teardown();
+    if (!enabled || !roomDocId || !myUid || !otherUid || !voiceSessionId) {
+      teardownMedia();
       return;
     }
 
+    const sid = voiceSessionId;
     let cancelled = false;
 
     (async () => {
@@ -260,17 +350,26 @@ export function useVoiceRoom(
 
         const amCaller = myUid < otherUid;
 
-        unsubRef.current = signalsCol(roomDocId)
-          .orderBy('t', 'asc')
-          .onSnapshot(snapshot => {
+        if (cancelled) {
+          return;
+        }
+
+        unsubSignalsRef.current = onSnapshot(
+          query(signalsCol(roomDocId), orderBy('t', 'asc')),
+          snapshot => {
             snapshot.docChanges().forEach(ch => {
               if (ch.type === 'added') {
-                processDoc(ch.doc.id, ch.doc.data()).catch(e =>
+                processDoc(ch.doc.id, ch.doc.data(), sid).catch(e =>
                   console.warn('processDoc', e),
                 );
               }
             });
-          });
+          },
+        );
+
+        if (cancelled) {
+          return;
+        }
 
         if (amCaller && !offerSentRef.current) {
           const pc = pcRef.current;
@@ -279,8 +378,11 @@ export function useVoiceRoom(
           }
           offerSentRef.current = true;
           const offer = await pc.createOffer({ voiceActivityDetection: true });
+          if (cancelled) {
+            return;
+          }
           await pc.setLocalDescription(offer);
-          await sendSignal(roomDocId, {
+          await sendSignal(roomDocId, sid, {
             fromUid: myUid,
             toUid: otherUid,
             signalType: 'offer',
@@ -296,7 +398,7 @@ export function useVoiceRoom(
 
     return () => {
       cancelled = true;
-      teardown();
+      teardownMedia();
     };
   }, [
     enabled,
@@ -306,12 +408,14 @@ export function useVoiceRoom(
     processDoc,
     roomDocId,
     setupPeer,
-    teardown,
+    teardownMedia,
+    voiceSessionId,
   ]);
 
   useEffect(() => {
     if (phase !== 'connected') {
-      setLocalSpeaking(false);
+      setAudioLevel(0);
+      smoothedLevelRef.current = 0;
       lastAudioBytesRef.current = 0;
       return;
     }
@@ -340,15 +444,28 @@ export function useVoiceRoom(
           );
         }
         const prev = lastAudioBytesRef.current;
-        const active = maxBytes > prev + 40;
+        const delta = maxBytes - prev;
         lastAudioBytesRef.current = maxBytes;
-        setLocalSpeaking(active);
+        const raw = Math.min(1, Math.max(0, delta / 420));
+        smoothedLevelRef.current =
+          smoothedLevelRef.current * 0.62 + raw * 0.38;
+        setAudioLevel(smoothedLevelRef.current);
       } catch {
-        setLocalSpeaking(false);
+        setAudioLevel(0);
       }
-    }, 220);
+    }, 180);
     return () => clearInterval(id);
   }, [phase]);
 
-  return { remoteStream, phase, errorMessage, teardown, localSpeaking };
+  const localSpeaking = audioLevel > 0.14;
+
+  return {
+    remoteStream,
+    phase,
+    errorMessage,
+    teardown: teardownMedia,
+    audioLevel,
+    localSpeaking,
+    voiceSessionReady: !!voiceSessionId,
+  };
 }
