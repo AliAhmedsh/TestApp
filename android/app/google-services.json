@@ -1,0 +1,79 @@
+{
+  "project_info": {
+    "project_number": "479692952772",
+    "firebase_url": "https://lingowire-default-rtdb.firebaseio.com",
+    "project_id": "lingowire",
+    "storage_bucket": "lingowire.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:479692952772:android:4603dd3a9a04eed6ade591",
+        "android_client_info": {
+          "package_name": "com.lingowire"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "479692952772-0cmifj6ah5tl6aimlq9mrj702r03ihgo.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.lingowire",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "479692952772-biqh7eov0i1cs18g1v814qqh958bb1b6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.lingowire",
+            "certificate_hash": "00112233445566778899aabbccddeeff00112233"
+          }
+        },
+        {
+          "client_id": "479692952772-cn1gva5jc39t5rdbv1q2dkreqfema8u2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.lingowire",
+            "certificate_hash": "883aa11928661d7539debb1f4a1958404dab1da7"
+          }
+        },
+        {
+          "client_id": "479692952772-tvmf797of8ufv2ujurcqbo0fbg9cqifr.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.lingowire",
+            "certificate_hash": "bcdef54ab53b60d4ef7b7974d869bf9ea95f3801"
+          }
+        },
+        {
+          "client_id": "479692952772-uufb6j7j6le3jqs619nvlkdv8rt6hlh3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbWGKL2-oWvB2SwgQjQEZiO2t-eT576ts"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "479692952772-uufb6j7j6le3jqs619nvlkdv8rt6hlh3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "479692952772-r6kivloic9ordvcd26dr124je1fsmd0d.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.lingowire"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
